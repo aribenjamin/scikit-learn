@@ -365,7 +365,7 @@ def _initialize_nmf(X, n_components, init=None, eps=1e-6, random_state=None):
     return W, H
 
 
-def _update_coordinate_descent(X, W, Ht, l1_reg, l2_reg, shuffle, random_state, ph_reg=None):
+def _update_coordinate_descent(X, W, Ht, l1_reg, l2_reg, shuffle, random_state):
     """Helper function for _fit_coordinate_descent.
 
     Update W to minimize the objective function, iterating once over all
@@ -382,10 +382,6 @@ def _update_coordinate_descent(X, W, Ht, l1_reg, l2_reg, shuffle, random_state, 
     if l2_reg != 0.0:
         # adds l2_reg only on the diagonal
         HHt.flat[:: n_components + 1] += l2_reg
-        
-    # potato head regularization also can be seen as W(HHt + G) instead of WHHt
-    if ph_reg is not None:
-        HHt += ph_reg
         
     # L1 regularization corresponds to decrease of each element of XHt
     if l1_reg != 0.0:
@@ -418,8 +414,7 @@ def _fit_coordinate_descent(
     update_H=True,
     verbose=0,
     shuffle=False,
-    random_state=None,
-    ph_reg=None
+    random_state=None
 ):
     """Compute Non-negative Matrix Factorization (NMF) with Coordinate Descent
 
@@ -501,7 +496,7 @@ def _fit_coordinate_descent(
 
         # Update W
         violation += _update_coordinate_descent(
-            X, W, Ht, l1_reg_W, l2_reg_W, shuffle, rng, ph_reg=ph_reg
+            X, W, Ht, l1_reg_W, l2_reg_W, shuffle, rng
         )
         # Update H
         if update_H:
@@ -538,9 +533,8 @@ def _multiplicative_update_w(
     HHt=None,
     XHt=None,
     update_H=True,
-    ph_reg=None,
-    ph_relax_indices=None,
-    ph_relax_lambda=0,
+    augmented=False,
+    sparse_block_indices=None,
     W_lambda_vectors=None,
     
 ):
@@ -559,9 +553,6 @@ def _multiplicative_update_w(
         # Denominator
         if HHt is None:
             HHt = np.dot(H, H.T)
-            
-        if ph_reg is not None:
-            HHt += ph_reg  
             
         denominator = np.dot(W, HHt)
 
@@ -630,30 +621,19 @@ def _multiplicative_update_w(
 
     if l2_reg_W > 0:
         denominator = denominator + l2_reg_W * W
-
-    
-    augmented = (ph_reg is not None) and (ph_relax_indices is not None)
         
-    if ph_relax_indices is not None:
-        if ph_relax_lambda=='auto':
-            n = len(W_lambda_vectors)
-            for i,lambdas in enumerate(W_lambda_vectors):
-                ind = np.where(ph_relax_indices==i)[0]
-                denominator[:,ind] += lambdas
-                
-                # now update lambda                
-                l1 = np.sum(W[:,ind],1,keepdims=True)  # if l1 norm is 1/sqrt(n), no change
-                lambdas *= .5 + (l1)*.5 * np.sqrt(n) # additive constant = slower learning rate
+    if sparse_block_indices is not None:
+        n = len(W_lambda_vectors)
+        for i,lambdas in enumerate(W_lambda_vectors):
+            ind = np.where(sparse_block_indices==i)[0]
+            denominator[:,ind] += lambdas
+            
+            # now update lambda                
+            l1 = np.sum(W[:,ind],1,keepdims=True)  # if l1 norm is 1/sqrt(n), no change
+            lambdas *= .5 + (l1)*.5 * np.sqrt(n) # additive constant = slower learning rate
 
-                if augmented:
-                    denominator[:,ind] += (l1 - 1/np.sqrt(n)) * W[i,ind]
-                
-        elif ph_relax_lambda>0:
-            for i in np.unique(ph_relax_indices):
-                ind = np.where(ph_relax_indices==i)[0]
-                nnz = np.sum(W[:,ind] > .0001, 1, keepdims=True) # mul update means never goes to 0
-                denominator[:,ind] += (nnz-1) * ph_relax_lambda
- 
+            if augmented:
+                denominator[:,ind] += (l1 - 1/np.sqrt(n)) * W[i,ind] 
                             
     denominator[denominator <= 0] = EPSILON
 
@@ -665,9 +645,6 @@ def _multiplicative_update_w(
         delta_W **= gamma
 
     W *= delta_W
-
-    if ph_reg is not None:
-        W /= np.sum(W,1,keepdims=True)
 
     return W, H_sum, HHt, XHt
 
@@ -784,9 +761,8 @@ def _fit_multiplicative_update(
     l2_reg_H=0,
     update_H=True,
     verbose=0,
-    ph_reg=None,
-    ph_relax_indices=None,
-    ph_relax_lambda=0,
+    augmented=False,
+    sparse_block_indices=None,
 ):
     """Compute Non-negative Matrix Factorization with Multiplicative Update.
 
@@ -839,7 +815,7 @@ def _fit_multiplicative_update(
     verbose : int, default=0
         The verbosity level.
         
-    ph_reg : np.array, regularization matrix for subblock sparsity. 
+    augmented : Bool, whether to use the augmented Lagrangian method for the block sparsity penalty
 
     Returns
     -------
@@ -876,8 +852,8 @@ def _fit_multiplicative_update(
     previous_error = error_at_init
     
     W_lambda_vectors = None
-    if (ph_relax_indices is not None) and ph_relax_lambda=='auto':
-        n_clusters = len(np.unique(ph_relax_indices))
+    if (sparse_block_indices is not None):
+        n_clusters = len(np.unique(sparse_block_indices))
         W_lambda_vectors = [.10*np.ones((len(W),1)) for i in range(n_clusters)]
 
     H_sum, HHt, XHt = None, None, None
@@ -896,9 +872,8 @@ def _fit_multiplicative_update(
             HHt=HHt,
             XHt=XHt,
             update_H=update_H,
-            ph_reg=ph_reg,
-            ph_relax_indices=ph_relax_indices,
-            ph_relax_lambda=ph_relax_lambda,
+            augmented=augmented,
+            sparse_block_indices=sparse_block_indices,
             W_lambda_vectors=W_lambda_vectors
         )
 
@@ -937,11 +912,11 @@ def _fit_multiplicative_update(
                 )
 
             if (previous_error - error) / error_at_init < tol:
-                if ph_relax_lambda=='auto':
+                if sparse_block_indices is not None:
                     n = len(W_lambda_vectors)
                     done = 0
                     for i,lambdas in enumerate(W_lambda_vectors):
-                        ind = np.where(ph_relax_indices==i)[0]
+                        ind = np.where(sparse_block_indices==i)[0]
 
                         if np.abs( (np.sum(W[:,ind])*n - len(W)) / float(len(W))) < tol:
                             done += 1
@@ -1005,10 +980,8 @@ def non_negative_factorization(
     random_state=None,
     verbose=0,
     shuffle=False,
-    ph_reg=None,
-    ph_relax_indices=None,
-    ph_relax_lambda=0
-):
+    augmented=False,
+    sparse_block_indices=None):
     """Compute Non-negative Matrix Factorization (NMF).
 
     Find two non-negative matrices (W, H) whose product approximates the non-
@@ -1201,9 +1174,8 @@ def non_negative_factorization(
         l1_ratio=l1_ratio,
         verbose=verbose,
         shuffle=shuffle,    
-        ph_reg=ph_reg,
-        ph_relax_indices=ph_relax_indices,
-        ph_relax_lambda=ph_relax_lambda
+        augmented=augmented,
+        sparse_block_indices=sparse_block_indices
     )
 
     with config_context(assume_finite=True):
@@ -1247,9 +1219,8 @@ class _BaseNMF(_ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator
         alpha_H="same",
         l1_ratio=0.0,
         verbose=0,
-        ph_reg=None,
-        ph_relax_indices=None,
-        ph_relax_lambda=0
+        augmented=False,
+        sparse_block_indices=None,
     ):
         self.n_components = n_components
         self.init = init
@@ -1261,9 +1232,8 @@ class _BaseNMF(_ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator
         self.alpha_H = alpha_H
         self.l1_ratio = l1_ratio
         self.verbose = verbose
-        self.ph_reg = ph_reg
-        self.ph_relax_indices=ph_relax_indices,
-        self.ph_relax_lambda=ph_relax_lambda
+        self.augmented = augmented
+        self.sparse_block_indices=sparse_block_indices,
         self.regularization = 'deprecated'
 
     def _check_params(self, X):
@@ -1599,9 +1569,8 @@ class NMF(_BaseNMF):
         l1_ratio=0.0,
         verbose=0,
         shuffle=False,
-        ph_reg=None,
-        ph_relax_indices=None,
-        ph_relax_lambda=0
+        augmented=False,
+        sparse_block_indices=None,
     ):
         super().__init__(
             n_components=n_components,
@@ -1617,9 +1586,8 @@ class NMF(_BaseNMF):
         )
         self.solver = solver
         self.shuffle = shuffle
-        self.ph_reg = ph_reg
-        self.ph_relax_indices=ph_relax_indices
-        self.ph_relax_lambda=ph_relax_lambda
+        self.augmented = augmented
+        self.sparse_block_indices=sparse_block_indices
 
     def _check_params(self, X):
         super()._check_params(X)
@@ -1753,7 +1721,7 @@ class NMF(_BaseNMF):
                 verbose=self.verbose,
                 shuffle=self.shuffle,
                 random_state=self.random_state,
-                ph_reg=self.ph_reg
+                augmented=self.augmented
             )
         elif self.solver == "mu":
             W, H, n_iter, *_ = _fit_multiplicative_update(
@@ -1769,9 +1737,8 @@ class NMF(_BaseNMF):
                 l2_reg_H,
                 update_H,
                 self.verbose,
-                ph_reg=self.ph_reg,
-                ph_relax_indices=self.ph_relax_indices,
-                ph_relax_lambda=self.ph_relax_lambda
+                augmented=self.augmented,
+                sparse_block_indices=self.sparse_block_indices,
             )
         else:
             raise ValueError("Invalid solver parameter '%s'." % self.solver)
@@ -2040,9 +2007,8 @@ class MiniBatchNMF(_BaseNMF):
         transform_max_iter=None,
         random_state=None,
         verbose=0,
-        ph_reg=None,
-        ph_relax_indices=None,
-        ph_relax_lambda=0
+        augmented=False,
+        sparse_block_indices=None,
     ):
 
         super().__init__(
@@ -2064,9 +2030,8 @@ class MiniBatchNMF(_BaseNMF):
         self.fresh_restarts = fresh_restarts
         self.fresh_restarts_max_iter = fresh_restarts_max_iter
         self.transform_max_iter = transform_max_iter
-        self.ph_reg = ph_reg
-        self.ph_relax_indices=ph_relax_indices
-        self.ph_relax_lambda=ph_relax_lambda
+        self.augmented = augmented
+        self.sparse_block_indices=sparse_block_indices
 
     def _check_params(self, X):
         super()._check_params(X)
@@ -2110,9 +2075,8 @@ class MiniBatchNMF(_BaseNMF):
 
         for _ in range(max_iter):
             W, *_ = _multiplicative_update_w(
-                X, W, H, self._beta_loss, l1_reg_W, l2_reg_W, self._gamma,ph_reg=self.ph_reg,
-                ph_relax_indices=self.ph_relax_indices,
-                ph_relax_lambda=self.ph_relax_lambda
+                X, W, H, self._beta_loss, l1_reg_W, l2_reg_W, self._gamma,augmented=self.augmented,
+                sparse_block_indices=self.sparse_block_indices
             )
 
             W_diff = linalg.norm(W - W_buffer) / linalg.norm(W)
@@ -2136,9 +2100,8 @@ class MiniBatchNMF(_BaseNMF):
             W = self._solve_W(X, H, self.fresh_restarts_max_iter)
         else:
             W, *_ = _multiplicative_update_w(
-                X, W, H, self._beta_loss, l1_reg_W, l2_reg_W, self._gamma, ph_reg=self.ph_reg,
-                ph_relax_indices=self.ph_relax_indices,
-                ph_relax_lambda=self.ph_relax_lambda
+                X, W, H, self._beta_loss, l1_reg_W, l2_reg_W, self._gamma, augmented=self.augmented,
+                sparse_block_indices=self.sparse_block_indices,
             )
 
         # necessary for stability with beta_loss < 1
