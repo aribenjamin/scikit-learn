@@ -630,6 +630,9 @@ def _multiplicative_update_w(
 
     if l2_reg_W > 0:
         denominator = denominator + l2_reg_W * W
+
+    
+    augmented = (ph_reg is not None) and (ph_relax_indices is not None)
         
     if ph_relax_indices is not None:
         if ph_relax_lambda=='auto':
@@ -637,11 +640,13 @@ def _multiplicative_update_w(
             for i,lambdas in enumerate(W_lambda_vectors):
                 ind = np.where(ph_relax_indices==i)[0]
                 denominator[:,ind] += lambdas
-#                 W[:,ind] = np.maximum(EPSILON, W[:,ind]-lambdas) # normal weight decay
                 
                 # now update lambda                
-                l1 = np.sum(W[:,ind],1,keepdims=True) / np.sqrt(n) # if l1 norm is sqrt(n), no change
-                lambdas *= .5 + (l1)*.5 # additive constant = slower learning rate
+                l1 = np.sum(W[:,ind],1,keepdims=True)  # if l1 norm is 1/sqrt(n), no change
+                lambdas *= .5 + (l1)*.5 * np.sqrt(n) # additive constant = slower learning rate
+
+                if augmented:
+                    denominator[:,ind] += (l1 - 1/np.sqrt(n)) * W[i,ind]
                 
         elif ph_relax_lambda>0:
             for i in np.unique(ph_relax_indices):
@@ -655,13 +660,13 @@ def _multiplicative_update_w(
     numerator /= denominator
     delta_W = numerator
 
-    # gamma is in ]0, 1]
+    # gamma is in [0, 1]
     if gamma != 1:
         delta_W **= gamma
 
     W *= delta_W
 
-    if l1_reg_W > 0 or ph_reg is not None:
+    if ph_reg is not None:
         W /= np.sum(W,1,keepdims=True)
 
     return W, H_sum, HHt, XHt
@@ -1195,7 +1200,7 @@ def non_negative_factorization(
         alpha_H=alpha_H,
         l1_ratio=l1_ratio,
         verbose=verbose,
-        shuffle=shuffle,
+        shuffle=shuffle,    
         ph_reg=ph_reg,
         ph_relax_indices=ph_relax_indices,
         ph_relax_lambda=ph_relax_lambda
@@ -1259,6 +1264,7 @@ class _BaseNMF(_ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator
         self.ph_reg = ph_reg
         self.ph_relax_indices=ph_relax_indices,
         self.ph_relax_lambda=ph_relax_lambda
+        self.regularization = 'deprecated'
 
     def _check_params(self, X):
         # n_components
@@ -1593,7 +1599,6 @@ class NMF(_BaseNMF):
         l1_ratio=0.0,
         verbose=0,
         shuffle=False,
-        regularization="deprecated",
         ph_reg=None,
         ph_relax_indices=None,
         ph_relax_lambda=0
